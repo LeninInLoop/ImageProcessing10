@@ -82,6 +82,18 @@ class ConvolutionProcessor:
         return new_image_array
 
     @staticmethod
+    def compute_block_variance(image: np.ndarray, block_size: int = 16) -> np.ndarray:
+        h, w = image.shape
+        nH, nW = h // block_size, w // block_size
+        variance_map = np.zeros((nH, nW))
+        for i in range(nH):
+            for j in range(nW):
+                blk = image[i * block_size:(i + 1) * block_size,
+                      j * block_size:(j + 1) * block_size]
+                variance_map[i, j] = np.var(blk)
+        return variance_map
+
+    @staticmethod
     def calculate_gradient_angle(gx_image: np.ndarray, gy_image: np.ndarray, window_size: int = 3) -> np.ndarray:
         if gx_image.shape != gy_image.shape:
             raise ValueError("Input gradient images must have the same shape")
@@ -130,44 +142,67 @@ class ConvolutionProcessor:
         return bof
 
     @staticmethod
-    def draw_bof_slope_image(bof: np.ndarray, block_size: int = 16) -> np.ndarray:
+    def draw_bof_slope_image(
+            bof: np.ndarray,
+            original_image: np.ndarray,
+            block_size: int = 16,
+            variance_threshold: float = 5.0
+    ) -> np.ndarray:
         H, W = bof.shape
-        height, width = H*block_size, W*block_size
+        height, width = H * block_size, W * block_size
         canvas = Image.new('L', (width, height), 255)
         draw = ImageDraw.Draw(canvas)
+
+        # Compute variance map
+        variance_map = ConvolutionProcessor.compute_block_variance(original_image, block_size)
+
         for i in range(H):
             for j in range(W):
+                # Skip low-variance blocks
+                if variance_map[i, j] < variance_threshold:
+                    continue
+
                 angle = bof[i, j] * (np.pi / 16)
-                cx = j*block_size + block_size/2
-                cy = i*block_size + block_size/2
+                cx = j * block_size + block_size / 2
+                cy = i * block_size + block_size / 2
                 length = block_size * 0.9 / 2
                 dx = length * np.cos(angle)
                 dy = length * np.sin(angle)
-                draw.line([(cx-dx, cy-dy), (cx+dx, cy+dy)], fill=0, width=1)
+                draw.line([(cx - dx, cy - dy), (cx + dx, cy + dy)], fill=0, width=1)
         return np.array(canvas, dtype=np.uint8)
 
     @staticmethod
     def overlay_bof_on_image(
             image: np.ndarray,
             bof: np.ndarray,
+            original_image: np.ndarray,
             block_size: int = 16,
-            line_color=(255,0,0),
-            line_width: int = 1
+            line_color=(255, 0, 0),
+            line_width: int = 1,
+            variance_threshold: float = 5.0
     ) -> np.ndarray:
-        # convert gray to RGB
         gray = np.clip(image, 0, 255).astype(np.uint8)
         base = Image.fromarray(gray).convert('RGB')
         draw = ImageDraw.Draw(base)
+
+        # Compute variance map
+        variance_map = ConvolutionProcessor.compute_block_variance(original_image, block_size)
+
         H, W = bof.shape
         for i in range(H):
             for j in range(W):
-                angle = bof[i,j]*(np.pi/16)
-                cx = j*block_size + block_size/2
-                cy = i*block_size + block_size/2
-                L = block_size*0.45
-                dx, dy = L*np.cos(angle), L*np.sin(angle)
-                draw.line([(cx-dx, cy-dy),(cx+dx, cy+dy)], fill=line_color, width=line_width)
+                # Skip low-variance blocks
+                if variance_map[i, j] < variance_threshold:
+                    continue
+
+                angle = bof[i, j] * (np.pi / 16)
+                cx = j * block_size + block_size / 2
+                cy = i * block_size + block_size / 2
+                L = block_size * 0.45
+                dx, dy = L * np.cos(angle), L * np.sin(angle)
+                draw.line([(cx - dx, cy - dy), (cx + dx, cy + dy)], fill=line_color, width=line_width)
         return np.array(base)
+
 
 def main():
     image_base_path = r"Images"
@@ -200,8 +235,12 @@ def main():
         kernel=Gx,
     )
     print(50 * "=", "\nSobel X Image Array:\n", image_sobel_x)
-    plt.figure(1); plt.imshow(image_sobel_x, cmap="gray"); plt.title("Sobel X");plt.savefig(r"Images/sobel_x.tiff")
-    plt.show(); ImageUtils.save_image(np.abs(image_sobel_x), path=r"Images/sobel_x.tiff")
+    plt.figure(1)
+    plt.imshow(image_sobel_x, cmap="gray")
+    plt.title("Sobel X")
+    plt.savefig(r"Images/sobel_x.tiff")
+    plt.show()
+    # ImageUtils.save_image(np.abs(image_sobel_x), path=r"Images/sobel_x.tiff")
 
     image_sobel_y = ConvolutionProcessor.apply_convolution(
         padded_image=padded_image_array,
@@ -210,25 +249,62 @@ def main():
     )
     print(50 * "=", "\nSobel Y Image Array:\n",  image_sobel_y)
 
-    plt.figure(2); plt.imshow(image_sobel_y, cmap="gray"); plt.title("Sobel Y");plt.savefig(r"Images/sobel_y.tiff")
-    plt.show(); ImageUtils.save_image(np.abs(image_sobel_x), path=r"Images/sobel_y.tiff")
+    plt.figure(2)
+    plt.imshow(image_sobel_y, cmap="gray")
+    plt.title("Sobel Y")
+    plt.savefig(r"Images/sobel_y.tiff")
+    plt.show()
+    # ImageUtils.save_image(np.abs(image_sobel_x), path=r"Images/sobel_y.tiff")
 
-    gradient_angle = ConvolutionProcessor.calculate_gradient_angle(image_sobel_x, image_sobel_y, window_size=16)
-    plt.figure(3);plt.imshow(gradient_angle, cmap="gray"); plt.title("Gradient Angle")
-    plt.savefig(r"Images/gradient_angle.tiff"); plt.show()
+    gradient_angle = ConvolutionProcessor.calculate_gradient_angle(
+        image_sobel_x,
+        image_sobel_y,
+        window_size=16
+    )
+    plt.figure(3)
+    plt.imshow(gradient_angle, cmap="gray")
+    plt.title("Gradient Angle")
+    plt.savefig(r"Images/gradient_angle.tiff")
+    plt.show()
 
     gradient_angle = np.mod(gradient_angle, np.pi)
-    quant = ConvolutionProcessor.quantize_orientations(gradient_angle, num_bins=16)
+    quant = ConvolutionProcessor.quantize_orientations(
+        gradient_angle,
+        num_bins=16
+    )
     bof = ConvolutionProcessor.compute_bof(quant, block_size=16)
-    plt.figure(); plt.title("Block Orientation Field"); plt.imshow(bof, cmap='jet'); plt.colorbar()
-    plt.savefig(r"Images/bof.tiff"); plt.show()
+    plt.figure()
+    plt.title("Block Orientation Field")
+    plt.imshow(bof, cmap='jet')
+    plt.colorbar()
+    plt.savefig(r"Images/bof.tiff")
+    plt.show()
 
-    slope_img = ConvolutionProcessor.draw_bof_slope_image(bof, block_size=16)
-    plt.figure(); plt.title('BOF Slope Visualization'); plt.imshow(slope_img, cmap='gray'); plt.axis('off'); plt.show()
+    slope_img = ConvolutionProcessor.draw_bof_slope_image(
+        bof,
+        original_image=image_array,
+        block_size=16,
+        variance_threshold=150.0
+    )
+    plt.figure()
+    plt.title('BOF Slope Visualization')
+    plt.imshow(slope_img, cmap='gray')
+    plt.axis('off')
+    plt.show()
     ImageUtils.save_image(slope_img, os.path.join(image_base_path, 'bof_slope.png'))
 
-    overlay = ConvolutionProcessor.overlay_bof_on_image(image_array, bof)
-    plt.figure(); plt.title('BOF Overlay on Fingerprint'); plt.imshow(overlay); plt.axis('off'); plt.show()
+    overlay = ConvolutionProcessor.overlay_bof_on_image(
+        image_array,
+        bof,
+        original_image=image_array,
+        block_size=16,
+        variance_threshold=150.0
+    )
+    plt.figure()
+    plt.title('BOF Overlay on Fingerprint')
+    plt.imshow(overlay)
+    plt.axis('off')
+    plt.show()
     ImageUtils.save_image(overlay, os.path.join(image_base_path, 'bof_overlay.png'))
 
 if __name__ == '__main__':
